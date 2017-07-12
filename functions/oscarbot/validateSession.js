@@ -5,14 +5,24 @@ const dialogActions = require('./utils/dialogActions');
 const REPOSITORY_SLOT = 'Repository';
 
 /**
- * formatRepositoryName - Formats respoitory name to strip a trailing question
-    mark which could get inserted into the slot
+ * cleanupSlotInput - cleanup slot input, removing any trailing question mark.
  *
- * @param repoName - The repository name from the slot.
- * @returns - A formatted repository name
+ * @param slot - A slot value.
+ * @returns - A slot value, with any question mark replaced.
  */
-function formatRepositoryName(repoName) {
-  return /.*\?$/.test(repoName) ? repoName.slice(0, -1) : repoName;
+function cleanupSlotInput(repoName) {
+  return repoName;
+  //return repoName ? repoName.replace(/\?$/, '') : repoName;
+}
+
+/**
+ * isRepositorySyntacticallyCorrect - Returns true if the repo name syntax is valid.
+ *
+ * @param repoName - The repo name.
+ * @returns - True if the repo is syntactically correct.
+ */
+function isRepositorySyntacticallyCorrect(repoName) {
+  return /(.+)\/(.+)/.test(repoName);
 }
 
 /**
@@ -45,6 +55,46 @@ function setRepositoryValidated(sessionAttributes, repositoryName) {
 }
 
 /**
+ * elicitRepositorySlot - Elicts a request for the repository slot.
+ *
+ * @param callback - The lambda callback.
+ * @param event - The incoming event.
+ * @param message - The message to send.
+ */
+function elicitRepositorySlot(callback, event, message) {
+  callback(null, dialogActions.elicitSlot(event.sessionAttributes,
+    event.currentIntent.name, event.currentIntent.slots, REPOSITORY_SLOT, {
+      contentType: 'PlainText',
+      content: message
+    }));
+}
+
+/**
+ * repoExists - Returns a promise which resolves with true if the repo exists.
+ *
+ * @param repositoryName - The repository name.
+ * @returns - A promise which resolves with true if the repo exists.
+ */
+function repoExists(repositoryName) {
+  return github.login(config.GITHUB_USERNAME, config.GITHUB_PASSWORD)
+    .then((token) => {
+      return github.get(token, `/repos/${repositoryName}`);
+    })
+    .then(() => {
+      //  We only resolve for a 200 class response, i.e. repo exists.
+      return true;
+    })
+    .catch((err) => {
+      //  If the repo couldn't be found, let the user know.
+      if(err.statusCode === 404) {
+        return false;
+      }
+
+      throw err;
+    });
+}
+
+/**
  * validateSession - Ensures that we have sufficient session data. Will initiate
    dialog actions to get session data if needed.
  *
@@ -56,94 +106,64 @@ function setRepositoryValidated(sessionAttributes, repositoryName) {
    should return.
  */
 function validateSession(event, context, callback) {
-  return new Promise((resolve, reject) => {
-    const sessionAttributes = event.sessionAttributes || {};
-    const sessionRepositoryName = sessionAttributes[REPOSITORY_SLOT];
-    const slots = event.currentIntent.slots || {};
-    const slotRepositoryName = slots[REPOSITORY_SLOT] && formatRepositoryName(slots[REPOSITORY_SLOT]);
-    //  If we have a project name in the session, set it into the slot.
-    //  At this point, the caller can continue. We will never store an invalid
-    //  project in the session, so we can assume the project is validated and
-    //  exists.
-    if (sessionRepositoryName && !slotRepositoryName) {
-      slots[REPOSITORY_SLOT] = sessionRepositoryName;
-      return resolve(true);
-    }
-    //  If we have a project name in the slot, and it exists in the session we
-    //  continue.
-    //  At this point, the caller can continue. We will never store an invalid
-    //  project in the session, so we can assume the project is validated and
-    //  exists.
-    else if (slotRepositoryName && (slotRepositoryName === sessionRepositoryName)) {
-      return resolve(true);
-    }
+  //  Empty slots/sessionAttributes come in as null, rather than an empty
+  //  object. Ensure they are objects (makes the subequent logic easier).
+  if (!callback) throw new Error('Callback cannot be null');
+  if (!event.sessionAttributes) event.sessionAttributes = {};
+  if (!event.currentIntent.slots) event.currentIntent.slots = {};
 
-    //  There is no project name, but if might have been provided in a slot, or
-    //  it might be different from the session so we have to revalidate.
-    //  If so, validate it and then copy it to the session and the caller and 
-    //  continue.
-    else if (slotRepositoryName) {
+  return new Promise((resolve) => {
+    const sessionRepositoryName = event.sessionAttributes[REPOSITORY_SLOT];
+    const slotRepositoryName = cleanupSlotInput(event.currentIntent.slots[REPOSITORY_SLOT]);
 
-      // Check to see if the repository has been validated previously in the
-      // session, if so pop it in the sessionAttribute as our current repo
-      // and continue
-      if (repositoryHasBeenValidated(sessionAttributes, slotRepositoryName)) {
-        event.sessionAttributes[REPOSITORY_SLOT] = slotRepositoryName;
-        return resolve(true);
-      }
-
-      //  We can check the format first.
-      else if (!/(.+)\/(.+)/.test(slotRepositoryName)) {
-        const message = `'${slotRepositoryName}' doesn't look like a valid repo name, can you type it again? Don't forget to include the owner, such as 'twbs/bootstrap'.`;
-        callback(null, dialogActions.elicitSlot(sessionAttributes, 
-          event.currentIntent.name, event.currentIntent.slots, REPOSITORY_SLOT, {
-            contentType: 'PlainText',
-            content: message
-          }));
+    //  If we don't have a slot...
+    if (!slotRepositoryName) {
+      //  ...and we don't have a session, we're outta luck.
+      if (!sessionRepositoryName) {
+        elicitRepositorySlot(callback, event, 'What is the repository name?');
         return resolve(false);
       }
 
-      //  We'd better validate the project name before we continue.
-      github.login(config.GITHUB_USERNAME, config.GITHUB_PASSWORD)
-        .then((token) => {
-          return github.get(token, `/repos/${slotRepositoryName}`);
-        })
-        .then((response) => {
-          //  If we found the project, we're good. Copy the slot to a session
-          //  variable and continue.
-          if (response.statusCode < 400) {
-            event.sessionAttributes = Object.assign({}, event.sessionAttributes);
-            event.sessionAttributes[REPOSITORY_SLOT] = slotRepositoryName;
-            setRepositoryValidated(event.sessionAttributes, slotRepositoryName);
-            return resolve(true);
-          }
-        })
-        .catch((err) => {
-          //  If the repo couldn't be found, let the user know.
-          if(err.statusCode == 404) {
-            const message = `I'm sorry, I couldn't find a GitHub repo called ${slotRepositoryName}. Can you make sure I have access to the repo if it is private, ensure the name is in the format 'user/project' and type it again?`;
-            callback(null, dialogActions.elicitSlot(sessionAttributes, 
-              event.currentIntent.name, event.currentIntent.slots, REPOSITORY_SLOT, {
-                contentType: 'PlainText',
-                content: message
-              }));
-            return resolve(false);
-          }
-
-          //  If there is some other kind of error, then who knows.
-          return reject(err);
-        });
+      //  We've got a repo in the session. Copy it into the slot and we're good.
+      event.currentIntent.slots[REPOSITORY_SLOT] = sessionRepositoryName;
+      return resolve(true);
     }
 
-    //  There is no project name, so elicit one.
-    else {
-      callback(null, dialogActions.elicitSlot(sessionAttributes, 
-        event.currentIntent.name, event.currentIntent.slots, REPOSITORY_SLOT, {
-          contentType: 'PlainText',
-          content: 'What is the project name?'
-        }));
+    //  OK - we've got a slot. But now we need to validate it.
+
+    //  If we've got the repo in the slot, and it matches the session, we're good.
+    if (slotRepositoryName === sessionRepositoryName) {
+      return resolve(true);
+    }
+
+    // Check to see if the repository has been validated previously in the
+    // session, if so pop it in the sessionAttribute as our current repo
+    // and continue
+    if (repositoryHasBeenValidated(event.sessionAttributes, slotRepositoryName)) {
+      event.sessionAttributes[REPOSITORY_SLOT] = slotRepositoryName;
+      return resolve(true);
+    }
+
+    //  Validate the syntax of the repo.
+    if (!isRepositorySyntacticallyCorrect(slotRepositoryName)) {
+      const message = `'${slotRepositoryName}' doesn't look like a valid repo name, can you type it again? Don't forget to include the owner, such as 'twbs/bootstrap'.`;
+      elicitRepositorySlot(callback, event, message);
       return resolve(false);
     }
+
+    //  Validate the repository exists.
+    return repoExists(`/repos/${slotRepositoryName}`)
+      .then((exists) => {
+        if (exists) {
+          event.sessionAttributes[REPOSITORY_SLOT] = slotRepositoryName;
+          setRepositoryValidated(event.sessionAttributes, slotRepositoryName);
+          return resolve(true);
+        } else {
+          const message = `I'm sorry, I couldn't find a GitHub repo called ${slotRepositoryName}. Can you make sure I have access to the repo if it is private, ensure the name is in the format 'user/project' and type it again?`;
+          elicitRepositorySlot(callback, event, message);
+          return resolve(false);
+        }
+      });
   });
 }
 

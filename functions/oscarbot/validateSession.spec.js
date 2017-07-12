@@ -5,7 +5,6 @@ const intentRepositorySlot = require('./tests/intent-repository-slot.json');
 const intentRepositoryQuestionSlot = require('./tests/intent-repository-question-slot.json');
 const intentRepositorySession = require('./tests/intent-repository-session.json');
 
-
 describe('validateSession', () => {
   it('Should elicit a response from user for repository', (done) => {
     validateSession(intentRepository, null, (err, response) => {
@@ -26,7 +25,7 @@ describe('validateSession', () => {
   });
 
   it('Should ensure that a valid ProjectName with question mark is moved into a session variable', (done) => {
-    validateSession(intentRepositoryQuestionSlot, null, null)
+    validateSession(intentRepositoryQuestionSlot, fakeCallback, null)
       .then((validated) => {
         assert.equal(validated, true);
         assert.equal(intentRepositoryQuestionSlot.sessionAttributes.Repository, 'dwmkerr/angular-modal-service');
@@ -43,7 +42,7 @@ describe('validateSession', () => {
         }
       }
     });
-    validateSession(newIntent, null, (err, response) => {
+    validateSession(newIntent, fakeCallback, (err, response) => {
       assert.equal(response.dialogAction.type, 'ElicitSlot');
       assert.equal(response.dialogAction.slotToElicit, 'Repository');
       assert(response.dialogAction.message.content.match(/doesn't look like a valid repo name/));
